@@ -18,6 +18,11 @@
 #define LOG_TAG "Utils"
 #include <utils/Log.h>
 #include <ctype.h>
+#include <stdio.h>
+#include <sys/stat.h>
+
+#include <utility>
+#include <vector>
 
 #include "include/ESDS.h"
 
@@ -662,39 +667,39 @@ void convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
     // reassemble the csd data into its original form
     sp<ABuffer> csd0;
     if (msg->findBuffer("csd-0", &csd0)) {
-        if (mime.startsWith("video/")) { // do we need to be stricter than this?
+        int csd0size = csd0->size();
+        if (mime == MEDIA_MIMETYPE_VIDEO_AVC) {
             sp<ABuffer> csd1;
-
-            if (mime.startsWith(MEDIA_MIMETYPE_VIDEO_HEVC)) {
-                ALOGV("writing HVCC key value pair");
-                char hvcc[1024];
-                void* reassembledHVCC = NULL;
-                size_t reassembledHVCCBuffSize = 0;
-                if (ExtendedUtils::HEVCMuxer::makeHEVCCodecSpecificData(
-                    csd0->data(), csd0->size(),
-                    &reassembledHVCC, &reassembledHVCCBuffSize) == OK) {
-                    if (reassembledHVCC != NULL) {
-                        meta->setData(kKeyHVCC, kKeyHVCC, reassembledHVCC, reassembledHVCCBuffSize);
-                        free(reassembledHVCC);
-                    }
-                } else {
-                    ALOGE("Failed to reassemble HVCC data");
-                }
-            } else if (msg->findBuffer("csd-1", &csd1)) {
-                char avcc[1024]; // that oughta be enough, right?
-                size_t outsize = reassembleAVCC(csd0, csd1, avcc);
-                meta->setData(kKeyAVCC, kKeyAVCC, avcc, outsize);
-            } else {
-                int csd0size = csd0->size();
-                char esds[csd0size + 31];
-                reassembleESDS(csd0, esds);
-                meta->setData(kKeyESDS, kKeyESDS, esds, sizeof(esds));
+            if (msg->findBuffer("csd-1", &csd1)) {
+                std::vector<char> avcc(csd0size + csd1->size() + 1024);
+                size_t outsize = reassembleAVCC(csd0, csd1, avcc.data());
+                meta->setData(kKeyAVCC, kKeyAVCC, avcc.data(), outsize);
             }
-        } else if (mime.startsWith("audio/")) {
-            int csd0size = csd0->size();
-            char esds[csd0size + 31];
-            reassembleESDS(csd0, esds);
-            meta->setData(kKeyESDS, kKeyESDS, esds, sizeof(esds));
+        } else if (mime == MEDIA_MIMETYPE_AUDIO_AAC || mime == MEDIA_MIMETYPE_VIDEO_MPEG4) {
+            std::vector<char> esds(csd0size + 31);
+            // The written ESDS is actually for an audio stream, but it's enough
+            // for transporting the CSD to muxers.
+            reassembleESDS(csd0, esds.data());
+            meta->setData(kKeyESDS, kKeyESDS, esds.data(), esds.size());
+        } else if (mime == MEDIA_MIMETYPE_VIDEO_HEVC) {
+            std::vector<uint8_t> hvcc(csd0size + 1024);
+            size_t outsize = reassembleHVCC(csd0, hvcc.data(), hvcc.size(), 4);
+            meta->setData(kKeyHVCC, kKeyHVCC, hvcc.data(), outsize);
+        } else if (mime == MEDIA_MIMETYPE_VIDEO_VP9) {
+            meta->setData(kKeyVp9CodecPrivate, 0, csd0->data(), csd0->size());
+        } else if (mime == MEDIA_MIMETYPE_AUDIO_OPUS) {
+            meta->setData(kKeyOpusHeader, 0, csd0->data(), csd0->size());
+            if (msg->findBuffer("csd-1", &csd1)) {
+                meta->setData(kKeyOpusCodecDelay, 0, csd1->data(), csd1->size());
+            }
+            if (msg->findBuffer("csd-2", &csd2)) {
+                meta->setData(kKeyOpusSeekPreRoll, 0, csd2->data(), csd2->size());
+            }
+        } else if (mime == MEDIA_MIMETYPE_AUDIO_VORBIS) {
+            meta->setData(kKeyVorbisInfo, 0, csd0->data(), csd0->size());
+            if (msg->findBuffer("csd-1", &csd1)) {
+                meta->setData(kKeyVorbisBooks, 0, csd1->data(), csd1->size());
+            }
         }
     }
 
