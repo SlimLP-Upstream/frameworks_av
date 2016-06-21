@@ -28,7 +28,8 @@
 #include <utils/Log.h>
 #include <utils/Trace.h>
 #include <gui/Surface.h>
-#include <media/hardware/MetadataBufferType.h>
+#include <camera/ICameraRecordingProxy.h>
+#include <media/hardware/HardwareAPI.h>
 
 #include "common/CameraDeviceBase.h"
 #include "api1/Camera2Client.h"
@@ -765,13 +766,18 @@ status_t StreamingProcessor::processRecordingFrame() {
                 mRecordingHeap->mBuffers[heapIdx]->getMemory(&offset,
                         &size);
 
-        uint8_t *data = (uint8_t*)heap->getBase() + offset;
-        uint32_t type = kMetadataBufferTypeGrallocSource;
-        *((uint32_t*)data) = type;
-        *((buffer_handle_t*)(data + 4)) = imgBuffer.mGraphicBuffer->handle;
-        ALOGVV("%s: Camera %d: Sending out buffer_handle_t %p",
-                __FUNCTION__, mId,
-                imgBuffer.mGraphicBuffer->handle);
+        VideoNativeMetadata *payload = reinterpret_cast<VideoNativeMetadata*>(
+            (uint8_t*)heap->getBase() + offset);
+        payload->eType = kMetadataBufferTypeANWBuffer;
+        payload->pBuffer = imgBuffer.mGraphicBuffer->getNativeBuffer();
+        // b/28466701
+        payload->pBuffer = (ANativeWindowBuffer*)((uint8_t*)payload->pBuffer -
+                ICameraRecordingProxy::getCommonBaseAddress());
+        payload->nFenceFd = -1;
+
+        ALOGVV("%s: Camera %d: Sending out ANWBuffer %p",
+                __FUNCTION__, mId, payload->pBuffer);
+
         mRecordingBuffers.replaceAt(imgBuffer, heapIdx);
         recordingHeap = mRecordingHeap;
     }
@@ -812,6 +818,10 @@ void StreamingProcessor::releaseRecordingFrame(const sp<IMemory>& mem) {
                 kMetadataBufferTypeGrallocSource);
         return;
     }
+
+    // b/28466701
+    payload->pBuffer = (ANativeWindowBuffer*)(((uint8_t*)payload->pBuffer) +
+            ICameraRecordingProxy::getCommonBaseAddress());
 
     // Release the buffer back to the recording queue
 
